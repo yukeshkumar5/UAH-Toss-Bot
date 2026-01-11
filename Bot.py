@@ -21,7 +21,7 @@ games = {}
 
 # --- BOT LOGIC ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("I am ready! Admins can use /toss @Flipper @Caller to start.")
+    await update.message.reply_text("I am ready! Admins can use /toss @User1 @User2 to start.")
 
 async def start_toss(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
