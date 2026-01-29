@@ -3,14 +3,14 @@ import random
 import os
 from threading import Thread
 from flask import Flask
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatMember
-from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, CallbackQueryHandler
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
+from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, CallbackQueryHandler
 from telegram.helpers import mention_html
 
 # --- CONFIGURATION ---
 # REPLACE THIS WITH YOUR REAL TOKEN
-TOKEN = "8206877176:AAHSkf7uf9Qg-1Yo4IzQ_53Tc4_eGNMM8h4"
+TOKEN = "8206877176:AAHSkf7uf9Qg-1Yo4IzQ_53Tc4_eGNMM8h4" 
 
 # Enable logging
 logging.basicConfig(
@@ -45,180 +45,12 @@ async def is_admin(update: Update):
     chat_id = update.effective_chat.id
     user_id = update.effective_user.id
     
-    member = await update.effective_chat.get_member(user_id)
-    return member.status in ['administrator', 'creator']
-
-# --- BOT COMMANDS ---
-
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """ /help command """
-    help_text = (
-        "🏏 <b>CRICKET TOSS BOT HELP</b>\n\n"
-        "<b>Basic Commands:</b>\n"
-        "• <code>/toss @Flipper @Caller</code> - Start a toss\n"
-        "• <code>/reg @User Team Name</code> - Register a team name (Admins only)\n\n"
-        "<b>Override Commands (If buttons don't work):</b>\n"
-        "<i>(Only the Toss Creator or the Active Player can use these)</i>\n"
-        "• <code>/call H</code> or <code>/call T</code> - Call Heads/Tails\n"
-        "• <code>/decision bat</code> or <code>/decision bowl</code> - Choose Bat/Bowl"
-    )
-    await update.message.reply_text(help_text, parse_mode=ParseMode.HTML)
-
-async def register_team(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """ /reg @User Team Name (Admins Only) """
-    chat_id = update.effective_chat.id
-    
-    # 1. Check Admin Permissions
-    if not await is_admin(update):
-        await update.message.reply_text("⛔ Only Group Admins can register teams.")
-        return
-
-    # 2. Parse Arguments
-    args = context.args
-    if not args or len(args) < 2:
-        await update.message.reply_text("⚠️ Usage: <code>/reg @User Team Name</code>", parse_mode=ParseMode.HTML)
-        return
-
-    # 3. Extract User and Team Name
-    # We look for the entity in the message to get the ID safely
-    mentions = update.message.parse_entities(types=["mention", "text_mention"])
-    target_user_id = None
-    
-    # Get the first mentioned user
-    for entity, user in mentions.items():
-        if entity.type == 'text_mention':
-            target_user_id = user.user.id
-            break
-        elif entity.type == 'mention':
-            # This is harder because we only have username, but let's try to assume args[0] is the mention
-            # Note: Best way in API is text_mention, but for simple string matching:
-            target_user_id = None # Logic complicates here without user object, skipping for safety
-            # In a real bot, you rely on the update entities.
-            pass
-
-    # Fallback: if we can't get ID from entity easily (common in simple bots), 
-    # we just warn user to tag correctly.
-    # However, let's grab the mention from message entities.
-    entities = update.message.entities
-    if not entities or entities[0].type not in ['mention', 'text_mention']:
-         await update.message.reply_text("⚠️ Please mention the user first: <code>/reg @User Team Name</code>", parse_mode=ParseMode.HTML)
-         return
-
-    # Get the user object from the entity if possible, or we need to rely on the update data
-    # NOTE: Telegram API doesn't give User ID from a simple text "@username" unless the bot has seen them.
-    # We will rely on the `message.parse_entities` we did earlier.
-    
-    # Let's simplify: To register, the user MUST be clickable (text_mention) or valid username.
-    # We will iterate entities again.
-    found_user = None
-    for key, val in mentions.items():
-        # val is the text of the mention, key is the entity object
-        if key.type == 'text_mention':
-            found_user = key.user
-            break
-        # If it's a standard @mention, we can't easily get the ID unless we resolve it.
-        # For this snippet, we will assume the user has to be interactable.
-    
-    # Helper: If simple @mention, we try to map if the user has spoken before.
-    # For now, let's accept that we need a User Object.
-    
-    # FIX: Using message.reply_to_message is easier for ID, but requirement says "/reg @user Team".
-    # Let's assume the user tagged is in `update.message.effective_user`? No, that's the sender.
-    
-    # Implementation strategy: Split text.
-    # args[0] is likely the name. args[1:] is the team name.
-    team_name = " ".join(args[1:])
-    
-    # We need the ID. If we can't find it via text_mention, we store by username (less reliable).
-    # Storing by ID is best.
-    user_id_to_save = None
-    user_name_to_save = None
-    
-    for entity in update.message.entities:
-        if entity.type == 'text_mention':
-            user_id_to_save = entity.user.id
-            user_name_to_save = entity.user.first_name
-            break
-        if entity.type == 'mention':
-            # It's a @username. 
-            # We can't get ID easily. We will store Key as "USERNAME" (string).
-            username_str = update.message.text[entity.offset:entity.offset + entity.length]
-            # Verify if this matches args[0]
-            if username_str == args[0]:
-                 # Warning: Username changes break this.
-                 await update.message.reply_text("⚠️ Please use a clickable mention for better accuracy, or I can't get their ID.")
-                 return
-
-    if user_id_to_save and team_name:
-        if chat_id not in team_data:
-            team_data[chat_id] = {}
-        
-        team_data[chat_id][user_id_to_save] = team_name
-        
-        await update.message.reply_text(
-            f"✅ Registered!\n<b>{team_name}</b> is now managed by {mention_html(user_id_to_save, user_name_to_save)}",
-            parse_mode=ParseMode.HTML
-        )
-    else:
-        await update.message.reply_text("⚠️ Could not detect user. Please select them from the suggestion list when typing.")
-
-async def start_toss(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    user = update.effective_user
-    
-    # 1. Parse Mentions
-    mentions = update.message.parse_entities(types=["mention", "text_mention"])
-    players = []
-    
-    # Filter out bots and get users
-    for entity, text in mentions.items():
-        if entity.type == 'text_mention' and entity.user:
-             if not entity.user.is_bot:
-                players.append(entity.user)
-        elif entity.type == 'mention':
-            # We can't handle pure text mentions easily for logic without ID.
-            # Skipping strictly text-based mentions to ensure ID consistency for teams.
-            pass
-
-    # Ensure unique players
-    unique_players = list({p.id: p for p in players}.values())
-
-    if len(unique_players) < 2:
-        await update.message.reply_text("⚠️ Tag 2 players: <code>/toss @Player1 @Player2</code>", parse_mode=ParseMode.HTML)
-        return
-
-    flipper = unique_players[0]
-    caller = unique_players[1]
-    creator_id = user.id
-
-    # 2. Save Game State
-    games[chat_id] = {
-        'creator_id': creator_id,
-        'flipper': flipper,
-        'caller': caller,
-        'call_choice': None,
-        'winner': None,
-        'step': 'caller_choice',
-        'message_id': None # We will fill this after sending the message
-    }
-
-    # 3. Send Message
-    flipper_name = get_display_name(chat_id, flipper)
-    caller_name = get_display_name(chat_id, caller)
-
-    keyboard = [[InlineKeyboardButton("Heads 🗣️", callback_data='HEADS'), InlineKeyboardButton("Tails 🪙", callback_data='TAILS')]]
-    
-    sent_msg = await update.message.reply_text(
-        f"🏏 <b>Toss Time!</b>\n\n"
-        f"👤 <b>Flipper:</b> {flipper_name}\n"
-        f"🗣️ <b>Caller:</b> {caller_name}\n\n"
-        f"{caller_name}, please call <b>Heads</b> or <b>Tails</b>:",
-        reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode=ParseMode.HTML
-    )
-    
-    # Save the message ID so we can edit it later via /call commands
-    games[chat_id]['message_id'] = sent_msg.message_id
+    try:
+        member = await update.effective_chat.get_member(user_id)
+        return member.status in ['administrator', 'creator']
+    except:
+        # Fallback if bot is not admin or can't check
+        return False
 
 # --- LOGIC HANDLERS (Shared by Button & Command) ---
 
@@ -246,13 +78,17 @@ async def process_call(chat_id, user_id, choice, context):
             f"👤 {flipper_name}, it is your turn to <b>Flip the Coin!</b>")
             
     # Edit the existing game message
-    await context.bot.edit_message_text(
-        chat_id=chat_id,
-        message_id=game['message_id'],
-        text=text,
-        reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode=ParseMode.HTML
-    )
+    try:
+        await context.bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=game['message_id'],
+            text=text,
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode=ParseMode.HTML
+        )
+    except Exception as e:
+        logging.error(f"Error editing message: {e}")
+        
     return "Success"
 
 async def process_decision(chat_id, user_id, decision, context):
@@ -273,16 +109,148 @@ async def process_decision(chat_id, user_id, decision, context):
         f"🏆 <b>{winner_name}</b> won the toss and elected to <b>{decision}</b> first!"
     )
     
-    await context.bot.edit_message_text(
-        chat_id=chat_id,
-        message_id=game['message_id'],
-        text=final_text,
-        parse_mode=ParseMode.HTML
-    )
+    try:
+        await context.bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=game['message_id'],
+            text=final_text,
+            parse_mode=ParseMode.HTML
+        )
+    except Exception as e:
+        logging.error(f"Error editing message: {e}")
     
     # End Game
-    del games[chat_id]
+    if chat_id in games:
+        del games[chat_id]
     return "Success"
+
+# --- BOT COMMANDS ---
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """ /help command """
+    help_text = (
+        "🏏 <b>CRICKET TOSS BOT HELP</b>\n\n"
+        "<b>Basic Commands:</b>\n"
+        "• <code>/toss @Flipper @Caller</code> - Start a toss\n"
+        "• <code>/reg @User Team Name</code> - Register a team name (Admins only)\n\n"
+        "<b>Override Commands (For Captain/Owner):</b>\n"
+        "<i>Use these if buttons are not working or player is offline.</i>\n"
+        "• <code>/call H</code> or <code>/call T</code> - Call Heads/Tails\n"
+        "• <code>/decision bat</code> or <code>/decision bowl</code> - Choose Bat/Bowl"
+    )
+    await update.message.reply_text(help_text, parse_mode=ParseMode.HTML)
+
+async def register_team(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """ /reg @User Team Name (Admins Only) """
+    chat_id = update.effective_chat.id
+    
+    # 1. Check Admin Permissions
+    if not await is_admin(update):
+        await update.message.reply_text("⛔ Only Group Admins can register teams.")
+        return
+
+    # 2. Find the "Blue Name" (Text Mention)
+    target_user = None
+    target_entity = None
+    
+    entities = update.message.parse_entities(types=["text_mention", "mention"])
+    
+    for entity, text in entities.items():
+        if entity.type == 'text_mention':
+            target_user = entity.user
+            target_entity = entity
+            break
+        elif entity.type == 'mention':
+            await update.message.reply_text(
+                "⚠️ <b>I cannot identify that user.</b>\n\n"
+                "Please type @ and <b>select their name from the list</b> so it becomes a blue link.",
+                parse_mode=ParseMode.HTML
+            )
+            return
+
+    if not target_user:
+        await update.message.reply_text("⚠️ Usage: <code>/reg @User Team Name</code>\n(Make sure to use a blue mention!)", parse_mode=ParseMode.HTML)
+        return
+
+    # 3. Extract the Team Name
+    full_text = update.message.text
+    mention_end_index = target_entity.offset + target_entity.length
+    team_name_raw = full_text[mention_end_index:].strip()
+    
+    if not team_name_raw:
+        await update.message.reply_text("⚠️ You forgot to type the Team Name!")
+        return
+
+    # 4. Save to Memory
+    if chat_id not in team_data:
+        team_data[chat_id] = {}
+    
+    team_data[chat_id][target_user.id] = team_name_raw
+    
+    await update.message.reply_text(
+        f"✅ <b>Registered Successfully!</b>\n"
+        f"👤 Player: {mention_html(target_user.id, target_user.first_name)}\n"
+        f"🛡️ Team: <b>{team_name_raw}</b>",
+        parse_mode=ParseMode.HTML
+    )
+
+async def start_toss(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    user = update.effective_user
+    
+    # 1. Parse Players (Prefer Blue Mentions)
+    entities = update.message.parse_entities(types=["text_mention", "mention"])
+    players = []
+    
+    for entity, text in entities.items():
+        if entity.type == 'text_mention':
+            if not entity.user.is_bot:
+                players.append(entity.user)
+    
+    # Remove duplicates
+    unique_players = []
+    seen_ids = set()
+    for p in players:
+        if p.id not in seen_ids:
+            unique_players.append(p)
+            seen_ids.add(p.id)
+
+    if len(unique_players) < 2:
+        await update.message.reply_text(
+            "⚠️ <b>I need 2 players with Blue Mentions.</b>\n"
+            "Use: <code>/toss @Player1 @Player2</code>", 
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+    flipper = unique_players[0]
+    caller = unique_players[1]
+    
+    # 2. Save Game State
+    games[chat_id] = {
+        'creator_id': user.id,
+        'flipper': flipper,
+        'caller': caller,
+        'call_choice': None,
+        'winner': None,
+        'step': 'caller_choice',
+        'message_id': None 
+    }
+
+    flipper_name = get_display_name(chat_id, flipper)
+    caller_name = get_display_name(chat_id, caller)
+
+    keyboard = [[InlineKeyboardButton("Heads 🗣️", callback_data='HEADS'), InlineKeyboardButton("Tails 🪙", callback_data='TAILS')]]
+    
+    sent_msg = await update.message.reply_text(
+        f"🏏 <b>Toss Time!</b>\n\n"
+        f"👤 <b>Flipper:</b> {flipper_name}\n"
+        f"🗣️ <b>Caller:</b> {caller_name}\n\n"
+        f"{caller_name}, please call <b>Heads</b> or <b>Tails</b>:",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode=ParseMode.HTML
+    )
+    games[chat_id]['message_id'] = sent_msg.message_id
 
 # --- COMMAND OVERRIDES (/call & /decision) ---
 
@@ -304,10 +272,11 @@ async def command_call(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else: return
 
     result = await process_call(chat_id, user_id, choice, context)
+    
     if result == "Not authorized":
-        await update.message.reply_text("⛔ You are not the Caller or the Creator.")
+        await update.message.reply_text("⛔ You are not the Caller or the Creator.", quote=True)
     elif result == "Success":
-        # Delete the command message to keep chat clean (optional, requires permission)
+        # Try delete command to keep chat clean
         try: await update.message.delete()
         except: pass
 
@@ -327,8 +296,9 @@ async def command_decision(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else: return
 
     result = await process_decision(chat_id, user_id, decision, context)
+    
     if result == "Not authorized":
-        await update.message.reply_text("⛔ You are not the Winner or the Creator.")
+        await update.message.reply_text("⛔ You are not the Winner or the Creator.", quote=True)
     elif result == "Success":
         try: await update.message.delete()
         except: pass
@@ -378,13 +348,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         keyboard = [[InlineKeyboardButton("Bat 🏏", callback_data='BAT'), InlineKeyboardButton("Bowl ⚾", callback_data='BOWL')]]
         
-        await query.edit_message_text(
-            f"{msg}\n\n"
-            f"🎉 <b>{winner_name} WON THE TOSS!</b>\n\n"
-            f"{winner_name}, do you want to Bat or Bowl?",
-            reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode=ParseMode.HTML
-        )
+        try:
+            await query.edit_message_text(
+                f"{msg}\n\n"
+                f"🎉 <b>{winner_name} WON THE TOSS!</b>\n\n"
+                f"{winner_name}, do you want to Bat or Bowl?",
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode=ParseMode.HTML
+            )
+        except Exception as e:
+            logging.error(f"Error editing message: {e}")
 
     # 3. DECISION (Bat/Bowl)
     elif query.data in ['BAT', 'BOWL']:
@@ -395,7 +368,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer()
         await process_decision(chat_id, user_id, decision_text, context)
 
-# --- FLASK SERVER ---
+# --- FLASK SERVER (For Uptime) ---
 app = Flask(__name__)
 @app.route('/')
 def index(): return "Bot is running!"
@@ -405,13 +378,15 @@ def run_web_server():
     app.run(host='0.0.0.0', port=port)
 
 if __name__ == '__main__':
+    # Start Flask Server in Background
     t = Thread(target=run_web_server)
     t.start()
     
+    # Start Telegram Bot
     application = ApplicationBuilder().token(TOKEN).build()
     
     # Register Handlers
-    application.add_handler(CommandHandler("start", help_command)) # Start shows help
+    application.add_handler(CommandHandler("start", help_command)) 
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("toss", start_toss))
     application.add_handler(CommandHandler("reg", register_team))
