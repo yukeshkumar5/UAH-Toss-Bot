@@ -224,7 +224,7 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await q.edit_message_text(
             f"📢 <b>OFFICIAL RESULT</b>\n\n"
-            f"{game['winner'].mention} chose <b>{q.data}</b>",
+            f"{game['winner'].mention} choose to <b>{q.data} first </b>",
             parse_mode=ParseMode.HTML,
         )
 
