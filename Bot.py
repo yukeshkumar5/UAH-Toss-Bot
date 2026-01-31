@@ -9,7 +9,7 @@ from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, Callb
 from telegram.helpers import mention_html
 
 # ================= CONFIG =================
-TOKEN = "PASTE_YOUR_TOKEN_HERE"
+TOKEN = "8206877176:AAHSkf7uf9Qg-1Yo4IzQ_53Tc4_eGNMM8h4"
 
 logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s",
