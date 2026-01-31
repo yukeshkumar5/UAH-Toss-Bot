@@ -1,6 +1,7 @@
 import logging
 import random
 import os
+import uuid
 from threading import Thread
 from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -19,7 +20,8 @@ logging.basicConfig(
 
 # DICTIONARY TO STORE GAME STATE
 # This stays in memory as long as the bot runs (24/7)
-games = {}
+games = {}          # toss_id -> game
+group_admins = {}   # chat_id -> {owner, admins}
 
 # --- PLAYER CLASS (Handles Names & Usernames) ---
 class Player:
@@ -44,6 +46,11 @@ class Player:
         if self.username and telegram_user.username:
             return self.username.lower() == telegram_user.username.lower()
         return False
+def is_toss_admin(chat_id, user_id):
+    return (
+        chat_id in group_admins and
+        user_id in group_admins[chat_id]["admins"]
+    )
 
 # --- BOT COMMANDS ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -85,25 +92,64 @@ async def start_toss(update: Update, context: ContextTypes.DEFAULT_TYPE):
     caller = unique_players[1]
 
     # 2. Save Game (Lasts forever until finished)
-    games[chat_id] = {
-        'flipper': flipper,
-        'caller': caller,
-        'call_choice': None,
-        'winner': None,
-        'step': 'caller_choice' 
+    toss_id = str(uuid.uuid4())[:8]
+
+    games[toss_id] = {
+        "chat_id": chat_id,
+        "toss_id": toss_id,
+        "flipper": flipper,
+        "caller": caller,
+        "call_choice": None,
+        "winner": None,
+        "step": "caller_choice"
     }
+
 
     # 3. Step 1: Ask Caller
     keyboard = [[InlineKeyboardButton("Heads 🗣️", callback_data='HEADS'), InlineKeyboardButton("Tails 🪙", callback_data='TAILS')]]
     
-    await update.message.reply_text(
-        f"🏏 <b>Toss Time!</b>\n\n"
-        f"👤 <b>Flipper:</b> {flipper.mention}\n"
-        f"🗣️ <b>Caller:</b> {caller.mention}\n\n"
-        f"{caller.mention}, please call <b>Heads</b> or <b>Tails</b>:",
+    msg = await update.message.reply_text(
+        f"🏏 <b>Toss Time</b> (ID: <code>{toss_id}</code>)\n\n"
+        f"👤 Flipper: {flipper.mention}\n"
+        f"🗣️ Caller: {caller.mention}\n\n"
+        f"{caller.mention}, call Heads or Tails",
         reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode='HTML'
+        parse_mode="HTML"
     )
+
+    games[toss_id]["message_id"] = msg.message_id
+
+async def connect(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    user_id = update.effective_user.id
+
+    if chat_id in group_admins:
+        await update.message.reply_text("❌ Group already connected.")
+        return
+
+    group_admins[chat_id] = {
+        "owner": user_id,
+        "admins": {user_id}
+    }
+
+    await update.message.reply_text("✅ Group connected. You are Toss Owner.")
+async def promote(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    user = update.effective_user
+
+    if chat_id not in group_admins:
+        return
+
+    if user.id != group_admins[chat_id]["owner"]:
+        await update.message.reply_text("❌ Only owner can promote.")
+        return
+
+    entities = update.message.parse_entities(["mention", "text_mention"])
+    for ent, text in entities.items():
+        if ent.type == "text_mention":
+            group_admins[chat_id]["admins"].add(ent.user.id)
+
+    await update.message.reply_text("✅ Promoted to Toss Admin.")
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -114,7 +160,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer("No active toss found.", show_alert=True)
         return
 
-    game = games[chat_id]
+    game = next(
+        (g for g in games.values() if g["chat_id"] == chat_id and g["step"] != "done"),
+        None
+    )
+
+
     
     # --- LOGIC: CALLER CHOOSES HEADS/TAILS ---
     if game['step'] == 'caller_choice':
@@ -181,6 +232,92 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         await query.edit_message_text(text=final_text, parse_mode='HTML')
         del games[chat_id]
+async def call_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    user = update.effective_user
+
+    if not is_toss_admin(chat_id, user.id):
+        await update.message.reply_text("❌ Admin only.")
+        return
+
+    if not context.args:
+        return
+
+    choice = context.args[0].upper()
+    if choice not in ("H", "T"):
+        return
+
+    game = next(
+        (g for g in games.values()
+         if g["chat_id"] == chat_id and g["step"] == "caller_choice"),
+        None
+    )
+
+    if not game:
+        return
+
+    game["call_choice"] = "HEADS" if choice == "H" else "TAILS"
+    game["step"] = "flipper_flip"
+
+    await update.message.reply_text(
+        f"🗣️ Call set to <b>{game['call_choice']}</b> (admin override)",
+        parse_mode="HTML"
+    )
+async def flip_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    user = update.effective_user
+
+    if not is_toss_admin(chat_id, user.id):
+        return
+
+    game = next(
+        (g for g in games.values()
+         if g["chat_id"] == chat_id and g["step"] == "flipper_flip"),
+        None
+    )
+
+    if not game:
+        return
+
+    toss = random.choice(["HEADS", "TAILS"])
+    game["winner"] = game["caller"] if toss == game["call_choice"] else game["flipper"]
+    game["step"] = "winner_decision"
+
+    await update.message.reply_text(
+        f"🪙 Coin: <b>{toss}</b>\n"
+        f"🏆 Winner: {game['winner'].mention}",
+        parse_mode="HTML"
+    )
+async def dec_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    user = update.effective_user
+
+    if not is_toss_admin(chat_id, user.id):
+        return
+
+    if not context.args:
+        return
+
+    decision = context.args[0].upper()
+    if decision not in ("BAT", "BOWL"):
+        return
+
+    game = next(
+        (g for g in games.values()
+         if g["chat_id"] == chat_id and g["step"] == "winner_decision"),
+        None
+    )
+
+    if not game:
+        return
+
+    await update.message.reply_text(
+        f"📢 <b>OFFICIAL RESULT</b>\n"
+        f"{game['winner'].mention} chose to <b>{decision}</b>",
+        parse_mode="HTML"
+    )
+
+    game["step"] = "done"
 
 # --- FLASK SERVER (KEEPS BOT ALIVE 24/7) ---
 app = Flask(__name__)
@@ -204,6 +341,12 @@ if __name__ == '__main__':
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("toss", start_toss))
     application.add_handler(CallbackQueryHandler(button_handler))
+    application.add_handler(CommandHandler("connect", connect))
+    application.add_handler(CommandHandler("promote", promote))
+    application.add_handler(CommandHandler("call", call_cmd))
+    application.add_handler(CommandHandler("flip", flip_cmd))
+    application.add_handler(CommandHandler("dec", dec_cmd))
+
 
     print("Bot is running...")
     application.run_polling()
